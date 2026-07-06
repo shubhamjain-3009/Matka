@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bet Split Explorer — 3-way</title>
+<style>
+  :root { --bg:#0f1420; --panel:#182031; --ink:#e7ecf5; --muted:#8b97b0; --accent:#4f9dff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background:var(--bg); color:var(--ink); }
+  header { padding:20px 24px 8px; }
+  header h1 { margin:0; font-size:20px; font-weight:600; }
+  header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+  .wrap { display:grid; grid-template-columns:320px 1fr; gap:20px; padding:16px 24px 24px; }
+  .panel { background:var(--panel); border-radius:12px; padding:18px; }
+  .field { margin-bottom:18px; }
+  .field label { display:block; font-size:13px; color:var(--muted); margin-bottom:8px; }
+  .row { display:flex; align-items:center; gap:12px; }
+  input[type=range] { flex:1; accent-color:var(--accent); }
+  input[type=number] { background:#0d1220; border:1px solid #2a3448; color:var(--ink);
+     border-radius:8px; padding:8px 10px; font-size:14px; width:100%; }
+  input.num-small { width:88px; }
+  .seg { display:flex; gap:6px; }
+  .seg button { flex:1; background:#0d1220; border:1px solid #2a3448; color:var(--muted);
+     border-radius:8px; padding:8px; font-size:12px; cursor:pointer; }
+  .seg button.on { background:#22314d; color:var(--ink); border-color:var(--accent); }
+  .stat { font-size:13px; color:var(--muted); line-height:1.6; }
+  .stat b { color:var(--ink); }
+  .plotbox { position:relative; }
+  #plot { width:100%; height:560px; display:block; }
+  #tip { position:absolute; pointer-events:none; background:#0d1220; border:1px solid #2a3448;
+         border-radius:8px; padding:8px 10px; font-size:12px; line-height:1.5; display:none;
+         white-space:nowrap; transform:translate(-50%,-115%); }
+  .tag { display:inline-block; padding:2px 8px; border-radius:6px; font-size:11px; margin-left:6px;}
+  .tag.arb { background:#16391f; color:#5fe08a; }
+  .tag.noarb { background:#3a2016; color:#f0a878; }
+  .oddwrap { border-left:3px solid #2a3448; padding-left:10px; margin-bottom:14px; }
+  .oddwrap.a { border-color:#4f9dff; } .oddwrap.b { border-color:#c58bff; } .oddwrap.c { border-color:#5fe0d0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bet Split Explorer — 3-way</h1>
+  <p>Split a total across three opposing outcomes (A + B + C = total). Odds are the price (0–1) you pay to get $1 back. Each point in the triangle is one split.</p>
+</header>
+
+<div class="wrap">
+  <div class="panel">
+    <div class="field">
+      <label>Total sum ($)</label>
+      <input id="total" type="number" min="0" step="10" value="1000" />
+    </div>
+
+    <div class="oddwrap a">
+      <label style="font-size:13px;color:#8b97b0;">Odds — outcome A <span id="a-eq" class="stat"></span></label>
+      <div class="row"><input id="oddsA" type="range" min="0.01" max="1" step="0.01" value="0.40" />
+        <input id="oddsAnum" class="num-small" type="number" min="0.01" max="1" step="0.01" value="0.40" /></div>
+    </div>
+    <div class="oddwrap b">
+      <label style="font-size:13px;color:#8b97b0;">Odds — outcome B <span id="b-eq" class="stat"></span></label>
+      <div class="row"><input id="oddsB" type="range" min="0.01" max="1" step="0.01" value="0.35" />
+        <input id="oddsBnum" class="num-small" type="number" min="0.01" max="1" step="0.01" value="0.35" /></div>
+    </div>
+    <div class="oddwrap c">
+      <label style="font-size:13px;color:#8b97b0;">Odds — outcome C <span id="c-eq" class="stat"></span></label>
+      <div class="row"><input id="oddsC" type="range" min="0.01" max="1" step="0.01" value="0.30" />
+        <input id="oddsCnum" class="num-small" type="number" min="0.01" max="1" step="0.01" value="0.30" /></div>
+    </div>
+
+    <div class="field">
+      <label>Max acceptable loss ($)</label>
+      <div class="row">
+        <input id="maxloss" type="range" min="0" max="1000" step="10" value="300" />
+        <input id="maxlossnum" class="num-small" type="number" min="0" step="10" value="300" />
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Color the triangle by</label>
+      <div class="seg">
+        <button id="mProfit" class="on">Max profit</button>
+        <button id="mLoss">Worst-case loss</button>
+      </div>
+    </div>
+
+    <div class="field" style="margin-bottom:0">
+      <label>Summary</label>
+      <div id="summary" class="stat"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="plotbox">
+      <canvas id="plot"></canvas>
+      <div id="tip"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const BG = [15,20,32], MID = [40,52,72], POS = [95,224,138], NEG = [255,107,107];
+let METRIC = 'profit';
+let MODEL = null;
+
+function link(slider, box, onChange) {
+  slider.addEventListener('input', () => { box.value = slider.value; onChange(); });
+  box.addEventListener('input', () => {
+    let v = parseFloat(box.value);
+    if (!isNaN(v)) { v = Math.min(1, Math.max(0.01, v)); slider.value = v; }
+    onChange();
+  });
+}
+const lerp = (a, b, t) => [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t];
+
+function inputs() {
+  const T  = Math.max(0, parseFloat($('total').value) || 0);
+  const pA = Math.min(1, Math.max(0.01, parseFloat($('oddsA').value) || 0.01));
+  const pB = Math.min(1, Math.max(0.01, parseFloat($('oddsB').value) || 0.01));
+  const pC = Math.min(1, Math.max(0.01, parseFloat($('oddsC').value) || 0.01));
+  const maxLoss = Math.max(0, parseFloat($('maxloss').value) || 0);
+  $('a-eq').textContent = `→ ${(1/pA).toFixed(2)}x`;
+  $('b-eq').textContent = `→ ${(1/pB).toFixed(2)}x`;
+  $('c-eq').textContent = `→ ${(1/pC).toFixed(2)}x`;
+  return { T, pA, pB, pC, maxLoss, floor: -maxLoss };
+}
+
+// net outcomes for a split given as fractions (fa,fb,fc) of the total
+function nets(m, fa, fb, fc) {
+  const nA = (fa*m.T)/m.pA - m.T;
+  const nB = (fb*m.T)/m.pB - m.T;
+  const nC = (fc*m.T)/m.pC - m.T;
+  return [nA, nB, nC];
+}
+
+// ---- ternary geometry (all in CSS px) ----
+function geom(cssW, cssH) {
+  const padT = 40, padB = 40, padSide = 30, cbW = 78;   // reserve right strip for colorbar
+  const availW = cssW - padSide*2 - cbW, availH = cssH - padT - padB;
+  const side = Math.min(availW, availH / (Math.sqrt(3)/2));
+  const h = side * Math.sqrt(3)/2;
+  const originX = padSide + (availW - side)/2, cyTop = padT + (availH - h)/2;
+  const A = { x: originX + side/2, y: cyTop };          // top   = all-A
+  const B = { x: originX,          y: cyTop + h };       // left  = all-B
+  const C = { x: originX + side,   y: cyTop + h };       // right = all-C
+  return { A, B, C, cbX: cssW - cbW + 16, cbTop: padT, cbH: availH };
+}
+// barycentric (fa,fb,fc) for a point, using the triangle vertices
+function bary(g, x, y) {
+  const { A, B, C } = g;
+  const det = (B.y-C.y)*(A.x-C.x) + (C.x-B.x)*(A.y-C.y);
+  const fa = ((B.y-C.y)*(x-C.x) + (C.x-B.x)*(y-C.y)) / det;
+  const fb = ((C.y-A.y)*(x-C.x) + (A.x-C.x)*(y-C.y)) / det;
+  return [fa, fb, 1-fa-fb];
+}
+const toXY = (g, fa, fb, fc) => ({ x: fa*g.A.x + fb*g.B.x + fc*g.C.x,
+                                   y: fa*g.A.y + fb*g.B.y + fc*g.C.y });
+
+function colorFor(v, vmin, vmax) {
+  if (v >= 0) return lerp(MID, POS, vmax > 1e-9 ? Math.min(1, v/vmax) : 0);
+  return lerp(MID, NEG, vmin < -1e-9 ? Math.min(1, v/vmin) : 0);
+}
+
+function draw() {
+  const m = MODEL, cv = $('plot');
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = cv.clientWidth, cssH = cv.clientHeight;
+  cv.width = cssW*dpr; cv.height = cssH*dpr;
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,cssW,cssH);
+  const g = geom(cssW, cssH);
+  m._geom = g;
+
+  if (m.T <= 0) { ctx.fillStyle='#8b97b0'; ctx.fillText('Enter a total sum > 0', 40, 40); return; }
+
+  // pass 1: value range + optimum, sampled on a fine grid over the simplex
+  const S = 160; let vmin=Infinity, vmax=-Infinity, opt=null;
+  const val = (nA,nB,nC) => METRIC==='profit' ? Math.max(nA,nB,nC) : Math.min(nA,nB,nC);
+  for (let i=0;i<=S;i++) for (let j=0;j<=S-i;j++) {
+    const fa=i/S, fb=j/S, fc=1-fa-fb; if (fc<-1e-9) continue;
+    const [nA,nB,nC]=nets(m,fa,fb,fc);
+    const v=val(nA,nB,nC), worst=Math.min(nA,nB,nC), best=Math.max(nA,nB,nC);
+    if (v<vmin) vmin=v; if (v>vmax) vmax=v;
+    if (worst>=m.floor && (!opt || best>opt.best)) opt={fa,fb,fc,best,worst};
+  }
+  m.opt=opt; m.vmin=vmin; m.vmax=vmax;
+
+  // pass 2: heatmap into an offscreen buffer at CSS resolution
+  const off = document.createElement('canvas'); off.width=cssW; off.height=cssH;
+  const octx = off.getContext('2d'); const img = octx.createImageData(cssW, cssH); const d = img.data;
+  const minX=Math.floor(Math.min(g.A.x,g.B.x,g.C.x)), maxX=Math.ceil(Math.max(g.A.x,g.B.x,g.C.x));
+  const minY=Math.floor(Math.min(g.A.y,g.B.y,g.C.y)), maxY=Math.ceil(Math.max(g.A.y,g.B.y,g.C.y));
+  for (let y=minY;y<=maxY;y++) for (let x=minX;x<=maxX;x++) {
+    const [fa,fb,fc]=bary(g,x+0.5,y+0.5);
+    if (fa<0||fb<0||fc<0) continue;
+    const [nA,nB,nC]=nets(m,fa,fb,fc);
+    let col=colorFor(val(nA,nB,nC), vmin, vmax);
+    if (Math.min(nA,nB,nC) < m.floor) col=lerp(col, BG, 0.72);   // dim infeasible splits
+    const k=(y*cssW+x)*4; d[k]=col[0]|0; d[k+1]=col[1]|0; d[k+2]=col[2]|0; d[k+3]=255;
+  }
+  octx.putImageData(img,0,0);
+  ctx.drawImage(off,0,0,cssW,cssH);
+
+  // ternary gridlines every 20%
+  ctx.strokeStyle='rgba(231,236,245,0.12)'; ctx.lineWidth=1;
+  for (let k=1;k<=4;k++){ const t=k/5;
+    let p,q;
+    p=toXY(g,t,1-t,0); q=toXY(g,t,0,1-t); line(ctx,p,q);   // const A
+    p=toXY(g,1-t,t,0); q=toXY(g,0,t,1-t); line(ctx,p,q);   // const B
+    p=toXY(g,1-t,0,t); q=toXY(g,0,1-t,t); line(ctx,p,q);   // const C
+  }
+  // triangle outline
+  ctx.strokeStyle='#4a5670'; ctx.lineWidth=1.5;
+  ctx.beginPath(); ctx.moveTo(g.A.x,g.A.y); ctx.lineTo(g.B.x,g.B.y); ctx.lineTo(g.C.x,g.C.y); ctx.closePath(); ctx.stroke();
+
+  // corner labels
+  ctx.font='12px -apple-system, sans-serif'; ctx.textAlign='center';
+  ctx.fillStyle='#4f9dff'; ctx.textBaseline='bottom'; ctx.fillText(`all A  (${m.pA})`, g.A.x, g.A.y-8);
+  ctx.fillStyle='#c58bff'; ctx.textBaseline='top';
+  ctx.textAlign='right'; ctx.fillText(`all B  (${m.pB})`, g.B.x-4, g.B.y+8);
+  ctx.textAlign='left';  ctx.fillStyle='#5fe0d0'; ctx.fillText(`all C  (${m.pC})`, g.C.x+4, g.C.y+8);
+
+  // equal-payoff point
+  const sp=m.pA+m.pB+m.pC, eq=toXY(g, m.pA/sp, m.pB/sp, m.pC/sp);
+  ctx.strokeStyle='#ffffff'; ctx.lineWidth=1; ctx.fillStyle='rgba(255,255,255,0.25)';
+  ctx.beginPath(); ctx.arc(eq.x,eq.y,4,0,Math.PI*2); ctx.fill(); ctx.stroke();
+
+  // optimum marker + callout (bet A / bet B / bet C / max profit)
+  if (opt) {
+    const p=toXY(g,opt.fa,opt.fb,opt.fc);
+    ctx.fillStyle='#ffd35f'; ctx.strokeStyle='#fff'; ctx.lineWidth=1;
+    ctx.beginPath(); ctx.arc(p.x,p.y,6,0,Math.PI*2); ctx.fill(); ctx.stroke();
+    const lines=['★ optimum',
+      `bet A:  $${(opt.fa*m.T).toFixed(0)}`,
+      `bet B:  $${(opt.fb*m.T).toFixed(0)}`,
+      `bet C:  $${(opt.fc*m.T).toFixed(0)}`,
+      `max profit:  +$${opt.best.toFixed(0)}`];
+    ctx.font='12px -apple-system, sans-serif'; ctx.textAlign='left';
+    const boxW=Math.max(...lines.map(l=>ctx.measureText(l).width))+16, lh=16, boxH=lines.length*lh+8;
+    let bx=p.x+12, by=p.y-boxH-8;
+    if (bx+boxW>cssW-90) bx=p.x-12-boxW; if (by<8) by=p.y+12;
+    ctx.fillStyle='rgba(13,18,32,0.92)'; ctx.strokeStyle='#ffd35f';
+    ctx.beginPath(); ctx.rect(bx,by,boxW,boxH); ctx.fill(); ctx.stroke();
+    ctx.textBaseline='top';
+    lines.forEach((l,i)=>{ ctx.fillStyle=i===0?'#ffd35f':'#e7ecf5'; ctx.fillText(l,bx+8,by+6+i*lh); });
+  }
+
+  // colorbar
+  colorbar(ctx, g, vmin, vmax);
+}
+
+function line(ctx,p,q){ ctx.beginPath(); ctx.moveTo(p.x,p.y); ctx.lineTo(q.x,q.y); ctx.stroke(); }
+
+function colorbar(ctx, g, vmin, vmax){
+  const x=g.cbX, top=g.cbTop, h=g.cbH, w=14;
+  for (let i=0;i<h;i++){ const v=vmax-(i/h)*(vmax-vmin); const c=colorFor(v,vmin,vmax);
+    ctx.fillStyle=`rgb(${c[0]|0},${c[1]|0},${c[2]|0})`; ctx.fillRect(x,top+i,w,1); }
+  ctx.strokeStyle='#4a5670'; ctx.lineWidth=1; ctx.strokeRect(x,top,w,h);
+  ctx.fillStyle='#8b97b0'; ctx.font='11px -apple-system, sans-serif'; ctx.textAlign='left'; ctx.textBaseline='middle';
+  ctx.fillText(`+$${vmax.toFixed(0)}`, x+w+6, top);
+  ctx.fillText(`$${vmin.toFixed(0)}`, x+w+6, top+h);
+  if (vmin<0 && vmax>0){ const zy=top+(vmax/(vmax-vmin))*h;
+    ctx.fillText('$0', x+w+6, zy); ctx.strokeStyle='#e7ecf5'; ctx.beginPath(); ctx.moveTo(x,zy); ctx.lineTo(x+w,zy); ctx.stroke(); }
+  ctx.save(); ctx.translate(x-6, top+h/2); ctx.rotate(-Math.PI/2); ctx.textAlign='center'; ctx.textBaseline='bottom';
+  ctx.fillStyle='#8b97b0'; ctx.fillText(METRIC==='profit'?'max profit':'worst-case loss', 0, 0); ctx.restore();
+}
+
+function summarize() {
+  const m=MODEL, sp=m.pA+m.pB+m.pC, arb=sp<1, eqNet=m.T/sp-m.T;
+  let out=`Price sum = <b>${sp.toFixed(3)}</b>`+
+    (arb?`<span class="tag arb">arbitrage — guaranteed profit</span>`
+        :`<span class="tag noarb">margin — no risk-free profit</span>`)+
+    `<br>Equal-payoff split (white dot): $${(m.pA/sp*m.T).toFixed(0)} / $${(m.pB/sp*m.T).toFixed(0)} / $${(m.pC/sp*m.T).toFixed(0)} on A/B/C → net <b>${eqNet>=0?'+':''}$${eqNet.toFixed(0)}</b> whichever wins.`;
+  if (m.opt) out+=`<br><br>★ <b>Optimum</b> within max loss −$${m.maxLoss.toFixed(0)}:<br>`+
+    `A $${(m.opt.fa*m.T).toFixed(0)} · B $${(m.opt.fb*m.T).toFixed(0)} · C $${(m.opt.fc*m.T).toFixed(0)} `+
+    `→ up to <b>+$${m.opt.best.toFixed(0)}</b>, worst case <b>$${m.opt.worst.toFixed(0)}</b>.`;
+  else out+=`<br><br>★ No split keeps the worst case within −$${m.maxLoss.toFixed(0)}. Raise the max loss.`;
+  $('summary').innerHTML=out;
+}
+
+function render() { MODEL = inputs(); draw(); summarize(); }
+
+// hover: read the split under the cursor
+$('plot').addEventListener('mousemove', e => {
+  if (!MODEL || !MODEL._geom || MODEL.T<=0) return;
+  const g=MODEL._geom, r=$('plot').getBoundingClientRect();
+  const mx=e.clientX-r.left, my=e.clientY-r.top;
+  const [fa,fb,fc]=bary(g,mx,my), tip=$('tip');
+  if (fa<0||fb<0||fc<0){ tip.style.display='none'; return; }
+  const m=MODEL, [nA,nB,nC]=nets(m,fa,fb,fc), best=Math.max(nA,nB,nC), worst=Math.min(nA,nB,nC);
+  tip.innerHTML=`<b>A $${(fa*m.T).toFixed(0)} · B $${(fb*m.T).toFixed(0)} · C $${(fc*m.T).toFixed(0)}</b><br>`+
+    `<span style="color:#5fe08a">profit +$${best.toFixed(0)}</span> · <span style="color:#ff6b6b">loss $${worst.toFixed(0)}</span>`;
+  tip.style.left=mx+'px'; tip.style.top=my+'px'; tip.style.display='block';
+});
+$('plot').addEventListener('mouseleave', ()=>{ $('tip').style.display='none'; });
+
+// max-loss slider tracks the total
+function syncMaxLossRange(){
+  const T=Math.max(0,parseFloat($('total').value)||0); $('maxloss').max=T;
+  if (parseFloat($('maxloss').value)>T){ $('maxloss').value=T; $('maxlossnum').value=T; }
+}
+$('maxloss').addEventListener('input',()=>{ $('maxlossnum').value=$('maxloss').value; render(); });
+$('maxlossnum').addEventListener('input',()=>{ let v=parseFloat($('maxlossnum').value);
+  if(!isNaN(v)){ v=Math.max(0,v); $('maxloss').value=v; } render(); });
+$('mProfit').addEventListener('click',()=>{ METRIC='profit'; $('mProfit').classList.add('on'); $('mLoss').classList.remove('on'); render(); });
+$('mLoss').addEventListener('click',()=>{ METRIC='loss'; $('mLoss').classList.add('on'); $('mProfit').classList.remove('on'); render(); });
+
+link($('oddsA'),$('oddsAnum'),render);
+link($('oddsB'),$('oddsBnum'),render);
+link($('oddsC'),$('oddsCnum'),render);
+$('total').addEventListener('input',()=>{ syncMaxLossRange(); render(); });
+window.addEventListener('resize', ()=>{ if(MODEL) draw(); });
+syncMaxLossRange(); render();
+</script>
+</body>
+</html>

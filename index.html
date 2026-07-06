@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bet Split Explorer</title>
+<style>
+  :root { --bg:#0f1420; --panel:#182031; --ink:#e7ecf5; --muted:#8b97b0; --accent:#4f9dff; }
+  * { box-sizing: border-box; }
+  html, body { height:100%; }
+  body { margin:0; display:flex; flex-direction:column;
+         font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background:var(--bg); color:var(--ink); }
+  .topbar { display:flex; align-items:center; gap:20px; padding:14px 24px;
+            border-bottom:1px solid #22314d; background:var(--panel); }
+  .topbar h1 { margin:0; font-size:17px; font-weight:600; white-space:nowrap; }
+  .tabs { display:flex; gap:8px; }
+  .tabs button { background:#0d1220; border:1px solid #2a3448; color:var(--muted);
+                 border-radius:8px; padding:8px 16px; font-size:14px; cursor:pointer; }
+  .tabs button.on { background:#22314d; color:var(--ink); border-color:var(--accent); }
+  #frame { flex:1; width:100%; border:0; display:block; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>🎯 Bet Split Explorer</h1>
+    <div class="tabs">
+      <button id="tab2" class="on">2 outcomes</button>
+      <button id="tab3">3 outcomes</button>
+    </div>
+  </div>
+  <iframe id="frame" src="two-way.html" title="Bet Split Explorer"></iframe>
+
+<script>
+  const frame = document.getElementById('frame');
+  const tab2 = document.getElementById('tab2');
+  const tab3 = document.getElementById('tab3');
+
+  function show(which) {
+    const two = which !== 'three';
+    frame.src = two ? 'two-way.html' : 'three-way.html';
+    tab2.classList.toggle('on', two);
+    tab3.classList.toggle('on', !two);
+    // keep the URL in sync so refresh / bookmarks / links land on the right tab
+    if (location.hash !== (two ? '#two' : '#three')) location.hash = two ? 'two' : 'three';
+  }
+
+  tab2.addEventListener('click', () => show('two'));
+  tab3.addEventListener('click', () => show('three'));
+  window.addEventListener('hashchange', () => show(location.hash === '#three' ? 'three' : 'two'));
+
+  // initial tab from the URL hash (defaults to the 2-outcome app)
+  show(location.hash === '#three' ? 'three' : 'two');
+</script>
+</body>
+</html>

@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bet Split Explorer</title>
+<style>
+  :root { --bg:#0f1420; --panel:#182031; --ink:#e7ecf5; --muted:#8b97b0; --accent:#4f9dff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background:var(--bg); color:var(--ink); }
+  header { padding:20px 24px 8px; }
+  header h1 { margin:0; font-size:20px; font-weight:600; }
+  header p { margin:4px 0 0; color:var(--muted); font-size:13px; }
+  .wrap { display:grid; grid-template-columns:320px 1fr; gap:20px; padding:16px 24px 24px; }
+  .panel { background:var(--panel); border-radius:12px; padding:18px; }
+  .field { margin-bottom:22px; }
+  .field label { display:block; font-size:13px; color:var(--muted); margin-bottom:8px; }
+  .row { display:flex; align-items:center; gap:12px; }
+  input[type=range] { flex:1; accent-color:var(--accent); }
+  input[type=number], input[type=text] {
+     background:#0d1220; border:1px solid #2a3448; color:var(--ink);
+     border-radius:8px; padding:8px 10px; font-size:14px; width:100%; }
+  input.num-small { width:88px; }
+  .stat { font-size:13px; color:var(--muted); line-height:1.6; }
+  .stat b { color:var(--ink); }
+  .plotbox { position:relative; }
+  #plot { width:100%; height:520px; display:block; }
+  #tip { position:absolute; pointer-events:none; background:#0d1220; border:1px solid #2a3448;
+         border-radius:8px; padding:8px 10px; font-size:12px; line-height:1.5; display:none;
+         white-space:nowrap; transform:translate(-50%,-110%); }
+  .tag { display:inline-block; padding:2px 8px; border-radius:6px; font-size:11px; margin-left:6px;}
+  .tag.arb { background:#16391f; color:#5fe08a; }
+  .tag.noarb { background:#3a2016; color:#f0a878; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bet Split Explorer</h1>
+  <p>Split a total across two opposing outcomes. Odds are the price (in dollars, 0–1) you pay to get $1 back.</p>
+</header>
+
+<div class="wrap">
+  <div class="panel">
+    <div class="field">
+      <label>Total sum ($)</label>
+      <input id="total" type="number" min="0" step="10" value="1000" />
+    </div>
+
+    <div class="field">
+      <label>Odds — outcome A&nbsp; (price per $1 back) <span id="a-eq" class="stat"></span></label>
+      <div class="row">
+        <input id="oddsA" type="range" min="0.01" max="1" step="0.01" value="0.50" />
+        <input id="oddsAnum" class="num-small" type="number" min="0.01" max="1" step="0.01" value="0.50" />
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Odds — outcome B&nbsp; (price per $1 back) <span id="b-eq" class="stat"></span></label>
+      <div class="row">
+        <input id="oddsB" type="range" min="0.01" max="1" step="0.01" value="0.50" />
+        <input id="oddsBnum" class="num-small" type="number" min="0.01" max="1" step="0.01" value="0.50" />
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Max acceptable loss ($)</label>
+      <div class="row">
+        <input id="maxloss" type="range" min="0" max="1000" step="10" value="200" />
+        <input id="maxlossnum" class="num-small" type="number" min="0" step="10" value="200" />
+      </div>
+    </div>
+
+    <div class="field" style="margin-bottom:0">
+      <label>Summary</label>
+      <div id="summary" class="stat"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="plotbox">
+      <canvas id="plot"></canvas>
+      <div id="tip"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+const COL = {
+  profit:'#5fe08a', loss:'#ff6b6b', netA:'#4f9dff', netB:'#c58bff',
+  floor:'#ff9f40', opt:'#ffd35f', grid:'#2a3448', zero:'#4a5670', axis:'#8b97b0'
+};
+
+// slider <-> number box sync for a pair
+function link(slider, box, onChange) {
+  slider.addEventListener('input', () => { box.value = slider.value; onChange(); });
+  box.addEventListener('input', () => {
+    let v = parseFloat(box.value);
+    if (!isNaN(v)) { v = Math.min(1, Math.max(0.01, v)); slider.value = v; }
+    onChange();
+  });
+}
+
+// state shared with the hover handler
+let MODEL = null;
+
+function model() {
+  const T  = Math.max(0, parseFloat($('total').value) || 0);
+  const pA = Math.min(1, Math.max(0.01, parseFloat($('oddsA').value) || 0.01));
+  const pB = Math.min(1, Math.max(0.01, parseFloat($('oddsB').value) || 0.01));
+  const maxLoss = Math.max(0, parseFloat($('maxloss').value) || 0);
+  const floor = -maxLoss;
+
+  $('a-eq').textContent = `→ ${(1/pA).toFixed(2)}x payout`;
+  $('b-eq').textContent = `→ ${(1/pB).toFixed(2)}x payout`;
+
+  const N = 201;
+  const xs = [], netA = [], netB = [], profit = [], loss = [];
+  for (let i = 0; i < N; i++) {
+    const x = T * i / (N - 1);         // amount on A
+    const y = T - x;                   // amount on B
+    const nA = x / pA - T;             // net if A wins
+    const nB = y / pB - T;             // net if B wins
+    xs.push(x); netA.push(nA); netB.push(nB);
+    profit.push(Math.max(nA, nB));     // best case for this split
+    loss.push(Math.min(nA, nB));       // worst case for this split
+  }
+
+  // optimum = feasible split (worst case above the floor) with highest profit
+  let optIdx = -1, optProfit = -Infinity;
+  for (let i = 0; i < N; i++) {
+    if (loss[i] >= floor && profit[i] > optProfit) { optProfit = profit[i]; optIdx = i; }
+  }
+
+  const xStar = T * pA / (pA + pB);      // equal-payoff split
+  const equalNet = xStar / pA - T;
+  const implied = pA + pB;
+
+  return { T, pA, pB, maxLoss, floor, N, xs, netA, netB, profit, loss, optIdx, xStar, equalNet, implied };
+}
+
+function summarize(m) {
+  const arb = m.implied < 1;
+  let out =
+    `Equal-payoff split: <b>$${m.xStar.toFixed(0)}</b> on A, <b>$${(m.T-m.xStar).toFixed(0)}</b> on B ` +
+    `→ net <b>${m.equalNet>=0?'+':''}$${m.equalNet.toFixed(0)}</b> either way.<br>` +
+    `Price sum = <b>${m.implied.toFixed(3)}</b>` +
+    (arb ? `<span class="tag arb">arbitrage — guaranteed profit</span>`
+         : `<span class="tag noarb">margin — no risk-free profit</span>`);
+  if (m.optIdx >= 0) {
+    const ox = m.xs[m.optIdx];
+    out += `<br><br>★ <b>Optimum</b> within max loss −$${m.maxLoss.toFixed(0)}: ` +
+           `<b>$${ox.toFixed(0)}</b> on A, <b>$${(m.T-ox).toFixed(0)}</b> on B ` +
+           `→ up to <b>+$${m.profit[m.optIdx].toFixed(0)}</b>, ` +
+           `worst case <b>$${m.loss[m.optIdx].toFixed(0)}</b>.`;
+  } else {
+    out += `<br><br>★ No split keeps the worst case within −$${m.maxLoss.toFixed(0)}. Raise the max loss.`;
+  }
+  $('summary').innerHTML = out;
+}
+
+// ---------- canvas plot ----------
+function niceStep(range, target) {
+  const raw = range / target;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  const step = norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10;
+  return step * mag;
+}
+
+function draw(m) {
+  const cv = $('plot');
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = cv.clientWidth, cssH = cv.clientHeight;
+  cv.width = cssW * dpr; cv.height = cssH * dpr;
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+
+  const padL = 64, padR = 16, padT = 16, padB = 64;
+  const W = cssW - padL - padR, H = cssH - padT - padB;
+
+  // y-range across every series and the floor line
+  let yMin = Math.min(m.floor, ...m.loss, ...m.netA, ...m.netB);
+  let yMax = Math.max(0, ...m.profit, ...m.netA, ...m.netB);
+  if (yMin === yMax) { yMin -= 1; yMax += 1; }
+  const padY = (yMax - yMin) * 0.08; yMin -= padY; yMax += padY;
+  const xMax = m.T || 1;
+
+  const px = x => padL + (x / xMax) * W;
+  const py = y => padT + (1 - (y - yMin) / (yMax - yMin)) * H;
+
+  // grid + y ticks
+  ctx.font = '11px -apple-system, sans-serif';
+  const yStep = niceStep(yMax - yMin, 6);
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (let v = Math.ceil(yMin / yStep) * yStep; v <= yMax; v += yStep) {
+    const y = py(v);
+    ctx.strokeStyle = COL.grid; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + W, y); ctx.stroke();
+    ctx.fillStyle = COL.axis;
+    ctx.fillText(`$${v.toFixed(0)}`, padL - 8, y);
+  }
+  // x ticks
+  const xStep = niceStep(xMax, 6);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (let v = 0; v <= xMax + 1e-6; v += xStep) {
+    const x = px(v);
+    ctx.strokeStyle = COL.grid; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + H); ctx.stroke();
+    ctx.fillStyle = COL.axis;
+    ctx.fillText(`$${v.toFixed(0)}`, x, padT + H + 6);
+  }
+
+  // zero line
+  if (0 >= yMin && 0 <= yMax) {
+    ctx.strokeStyle = COL.zero; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(padL, py(0)); ctx.lineTo(padL + W, py(0)); ctx.stroke();
+  }
+
+  // max-loss floor line (dashed)
+  if (m.floor >= yMin && m.floor <= yMax) {
+    ctx.save();
+    ctx.strokeStyle = COL.floor; ctx.lineWidth = 1.5; ctx.setLineDash([6, 5]);
+    ctx.beginPath(); ctx.moveTo(padL, py(m.floor)); ctx.lineTo(padL + W, py(m.floor)); ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = COL.floor; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+    ctx.fillText(`max loss −$${m.maxLoss.toFixed(0)}`, padL + 6, py(m.floor) - 3);
+  }
+
+  const series = (arr, color, width, dash) => {
+    ctx.save();
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash || []);
+    ctx.beginPath();
+    for (let i = 0; i < m.N; i++) { const X = px(m.xs[i]), Y = py(arr[i]); i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); }
+    ctx.stroke(); ctx.restore();
+  };
+  series(m.netA, COL.netA, 1, [2, 3]);
+  series(m.netB, COL.netB, 1, [2, 3]);
+  series(m.profit, COL.profit, 3);
+  series(m.loss, COL.loss, 3);
+
+  // optimum marker with its three key values printed alongside
+  if (m.optIdx >= 0) {
+    const X = px(m.xs[m.optIdx]), Y = py(m.profit[m.optIdx]);
+    ctx.fillStyle = COL.opt; ctx.strokeStyle = '#fff'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(X, Y, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+
+    const lines = [
+      '★ optimum',
+      `bet A:  $${m.xs[m.optIdx].toFixed(0)}`,
+      `bet B:  $${(m.T - m.xs[m.optIdx]).toFixed(0)}`,
+      `max profit:  +$${m.profit[m.optIdx].toFixed(0)}`
+    ];
+    ctx.font = '12px -apple-system, sans-serif';
+    const boxW = Math.max(...lines.map(l => ctx.measureText(l).width)) + 16;
+    const lh = 16, boxH = lines.length * lh + 8;
+    // place right of the marker, flip left if it would overflow the plot
+    let bx = X + 12, by = Y - boxH - 8;
+    if (bx + boxW > padL + W) bx = X - 12 - boxW;
+    if (by < padT) by = Y + 12;
+    ctx.fillStyle = 'rgba(13,18,32,0.92)';
+    ctx.strokeStyle = COL.opt; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.rect(bx, by, boxW, boxH); ctx.fill(); ctx.stroke();
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    lines.forEach((l, i) => {
+      ctx.fillStyle = i === 0 ? COL.opt : '#e7ecf5';
+      ctx.fillText(l, bx + 8, by + 6 + i * lh);
+    });
+  }
+
+  // axis titles
+  ctx.fillStyle = COL.axis; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+  ctx.fillText('Amount on A  ($);   B = Total − A', padL + W / 2, cssH - 4);
+  ctx.save();
+  ctx.translate(14, padT + H / 2); ctx.rotate(-Math.PI / 2);
+  ctx.textBaseline = 'top'; ctx.fillText('Net gain / loss ($)', 0, 0);
+  ctx.restore();
+
+  // legend
+  const items = [['Max profit', COL.profit], ['Max loss', COL.loss],
+                 ['Net if A wins', COL.netA], ['Net if B wins', COL.netB]];
+  let lx = padL + 4; const ly = padT + 6;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  items.forEach(([label, color]) => {
+    ctx.strokeStyle = color; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(lx, ly); ctx.lineTo(lx + 18, ly); ctx.stroke();
+    ctx.fillStyle = COL.ink || '#e7ecf5';
+    ctx.fillText(label, lx + 24, ly);
+    lx += 30 + ctx.measureText(label).width + 18;
+  });
+
+  // stash geometry for hover
+  m._geom = { padL, padT, W, H, xMax, yMin, yMax, px, py };
+}
+
+function render() {
+  MODEL = model();
+  summarize(MODEL);
+  draw(MODEL);
+}
+
+// hover tooltip
+$('plot').addEventListener('mousemove', e => {
+  if (!MODEL || !MODEL._geom) return;
+  const g = MODEL._geom, rect = $('plot').getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const frac = (mx - g.padL) / g.W;
+  if (frac < 0 || frac > 1) { $('tip').style.display = 'none'; return; }
+  const i = Math.round(frac * (MODEL.N - 1));
+  const m = MODEL, x = m.xs[i];
+  const tip = $('tip');
+  tip.innerHTML =
+    `<b>$${x.toFixed(0)} on A · $${(m.T-x).toFixed(0)} on B</b><br>` +
+    `<span style="color:${COL.profit}">profit +$${m.profit[i].toFixed(0)}</span> · ` +
+    `<span style="color:${COL.loss}">loss $${m.loss[i].toFixed(0)}</span>`;
+  tip.style.left = g.px(x) + 'px';
+  tip.style.top  = g.py(m.profit[i]) + 'px';
+  tip.style.display = 'block';
+});
+$('plot').addEventListener('mouseleave', () => { $('tip').style.display = 'none'; });
+
+// keep the max-loss slider's range in sync with the total, plus slider<->box
+function syncMaxLossRange() {
+  const T = Math.max(0, parseFloat($('total').value) || 0);
+  $('maxloss').max = T;
+  if (parseFloat($('maxloss').value) > T) { $('maxloss').value = T; $('maxlossnum').value = T; }
+}
+$('maxloss').addEventListener('input', () => { $('maxlossnum').value = $('maxloss').value; render(); });
+$('maxlossnum').addEventListener('input', () => {
+  let v = parseFloat($('maxlossnum').value);
+  if (!isNaN(v)) { v = Math.max(0, v); $('maxloss').value = v; }
+  render();
+});
+
+link($('oddsA'), $('oddsAnum'), render);
+link($('oddsB'), $('oddsBnum'), render);
+$('total').addEventListener('input', () => { syncMaxLossRange(); render(); });
+window.addEventListener('resize', () => draw(MODEL));
+syncMaxLossRange();
+render();
+</script>
+</body>
+</html>
